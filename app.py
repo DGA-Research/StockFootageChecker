@@ -179,9 +179,16 @@ with st.sidebar:
     use_scene_detect = st.checkbox("Use scene detection (PySceneDetect)", value=True)
     threshold = st.slider("Scene threshold", 1.0, 60.0, 27.0, 1.0)
     min_scene_len = st.slider("Min scene length (frames)", 1, 60, 12, 1)
-    max_frames = st.slider("Max frames to query", 1, 60, 8, 1)
+    max_frames = st.slider("Max frames to query", 1, 60, 12, 1)
     dedupe_hamming = st.slider("De-dup Hamming distance", 1, 16, 5, 1)
-    st.caption("Lower max frames keeps API costs low. Dedup filters near-identical frames.")
+    blur_thresh = st.slider("Blur filter (Laplacian var)", 0.0, 500.0, 50.0, 5.0,
+                            help="Filter out frames blurrier than this value. Higher = sharper only.")
+    stock_only = st.checkbox(
+        "Show stock domains only in results", value=True,
+        help="Filter to common stock providers (Adobe, Getty/iStock, Shutterstock, Alamy, Pond5, Storyblocks, Depositphotos, Dreamstime). Others appear in 'other_urls'."
+    )
+    st.caption("Tune sensitivity & cost. Use blur filter to avoid motion-blurred frames that confuse reverse image search.")
+
 
 uploaded = st.file_uploader("Upload ad video (MP4/WEBM/MOV)", type=["mp4", "mov", "webm"]) 
 
@@ -217,7 +224,21 @@ if uploaded:
     st.write(f"Kept {len(kept_frames)} unique frames after de-dup.")
 
     # 3) Limit to max_frames (simple sample)
-    sample_frames = kept_frames[: int(max_frames)]
+    # Filter out blurry frames using Laplacian variance
+    sharp_frames: List[Path] = []
+    for p in kept_frames:
+        try:
+            img = cv2.imread(str(p))
+            if img is None:
+                continue
+            fm = cv2.Laplacian(img, cv2.CV_64F).var()
+            if fm >= float(blur_thresh):
+                sharp_frames.append(p)
+        except Exception:
+            # if anything goes wrong, keep the frame rather than drop
+            sharp_frames.append(p)
+
+    sample_frames = sharp_frames[: int(max_frames)]
 
     st.subheader("Sampled Frames")
     cols = st.columns(min(4, len(sample_frames)) or 1)
