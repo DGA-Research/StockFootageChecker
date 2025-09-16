@@ -260,11 +260,27 @@ if uploaded:
         with st.spinner("Querying Vision API (Web Detection)..."):
             for p in sample_frames:
                 try:
-                    with open(p, "rb") as f:
-                        img_bytes = f.read()
+                    # Send PNG bytes (avoids JPEG artifacts)
+                    pil_im = Image.open(str(p)).convert("RGB")
+                    buf = io.BytesIO()
+                    pil_im.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
-                    urls = list({*(wd.get("visually_similar", []) + wd.get("pages_with_matches", []))})
+
+                    # Collect URLs and prioritize stock providers
+                    all_urls = list({*(wd.get("visually_similar", []) + wd.get("pages_with_matches", []))})
+                    _stock_domains = (
+                        "adobe.com/stock", "stock.adobe.com", "gettyimages.com", "istockphoto.com",
+                        "shutterstock.com", "alamy.com", "pond5.com", "storyblocks.com",
+                        "depositphotos.com", "dreamstime.com"
+                    )
+                    stock_urls = [u for u in all_urls if any(d in u for d in _stock_domains)]
+                    other_urls = [u for u in all_urls if u not in stock_urls]
+                    urls = stock_urls if stock_only else all_urls # prefer stock when present
+
                     entities = wd.get("web_entities", [])
+
                     row = {
                         "frame": p.name,
                         "preview": str(p),
@@ -272,11 +288,13 @@ if uploaded:
                         "similar_count": len(wd.get("visually_similar", [])),
                         "pages_count": len(wd.get("pages_with_matches", [])),
                         "top_urls": ", ".join(urls[:3]),
+                        "other_urls": ", ".join(other_urls[:3]),
                         "risk_tags": ", ".join(risk_tags_from_metadata(urls, entities)),
-                        "raw_urls": urls,
+                        "raw_urls": all_urls,
                         "raw_entities": entities,
                     }
                     results.append(row)
+
                 except Exception as e:
                     results.append({
                         "frame": p.name,
@@ -285,10 +303,12 @@ if uploaded:
                         "similar_count": 0,
                         "pages_count": 0,
                         "top_urls": "",
+                        "other_urls": "",
                         "risk_tags": f"Error: {e}",
                         "raw_urls": [],
                         "raw_entities": [],
                     })
+
 
     # 5) Present findings
     if results:
@@ -305,20 +325,27 @@ if uploaded:
         st.subheader("Findings Table")
         df = pd.DataFrame(results)
         # For display: clickable URLs in a simple way
-        def md_urls(s: str) -> str:
+        def _mk_links(s: str) -> str:
             if not s:
                 return ""
             parts = [u.strip() for u in s.split(",") if u.strip()]
-            return "<br>".join([f"<a href='{u}' target='_blank'>{u[:80]}{'…' if len(u)>80 else ''}</a>" for u in parts])
-
+            return "<br>".join(
+                [f"<a href='{u}' target='_blank'>{u[:80]}{'…' if len(u)>80 else ''}</a>" for u in parts]
+            )
+            
         disp = df.copy()
-        disp["top_urls"] = disp["top_urls"].apply(md_urls)
+        
+        for col in ("top_urls", "other_urls"):
+            if col in disp.columns:
+                disp[col] = disp[col].apply(_mk_links)
+    
+        
         # Hide raw columns from the view
-        disp_view = disp.drop(columns=["raw_urls", "raw_entities"]) if "raw_urls" in disp.columns else disp
-        st.write(
-            disp_view.to_html(escape=False, index=False),
-            unsafe_allow_html=True
-        )
+        drop_cols = [c for c in ("raw_urls", "raw_entities") if c in disp.columns]
+        disp_view = disp.drop(columns=drop_cols) if drop_cols else disp
+
+        st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
+
 
         # Download CSV
         csv_bytes = df.to_csv(index=False).encode("utf-8")
