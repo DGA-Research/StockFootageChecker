@@ -104,18 +104,25 @@ def dedupe_frames_by_phash(frame_paths: List[Path], max_distance: int = 5) -> Li
 
 
 # ---- Credential bootstrap (secrets first, then env var) ----
-VISION_CLIENT = None
-try:
-    if "gcp_service_account" in st.secrets:
-        _creds = service_account.Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]))
-        VISION_CLIENT = vision.ImageAnnotatorClient(credentials=_creds)
-    elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-        VISION_CLIENT = vision.ImageAnnotatorClient()  # will read env var
-except Exception as _e:
-    VISION_CLIENT = None
+def get_vision_client():
+    """Return a Vision client using Streamlit secrets if available, else env var. None if neither is set."""
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds = service_account.Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]))
+            return vision.ImageAnnotatorClient(credentials=creds)
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            # Uses default credentials loader which reads the env var path
+            return vision.ImageAnnotatorClient()
+    except Exception:
+        return None
+    return None
+
+VISION_CLIENT = get_vision_client()
 
 
 def gcv_web_detection_for_image_bytes(img_bytes: bytes) -> Dict[str, Any]:
+(img_bytes: bytes) -> Dict[str, Any]:
     if VISION_CLIENT is None:
         raise RuntimeError("Google Vision credentials not configured: add `gcp_service_account` to st.secrets or set GOOGLE_APPLICATION_CREDENTIALS.")
     image = vision.Image(content=img_bytes)
