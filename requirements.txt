@@ -1,0 +1,7 @@
+streamlit
+pandas
+Pillow
+imagehash
+scenedetect
+opencv-python-headless
+google-cloud-vision
