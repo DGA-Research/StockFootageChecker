@@ -206,7 +206,7 @@ if uploaded:
     cols = st.columns(min(4, len(sample_frames)) or 1)
     for i, p in enumerate(sample_frames):
         with cols[i % len(cols)]:
-            st.image(str(p), caption=p.name, use_column_width=True)
+            st.image(str(p), caption=p.name, use_container_width=True)
 
     # 4) Call Google Vision Web Detection
     st.subheader("Reverse Image Lookups (Google Vision Web Detection)")
