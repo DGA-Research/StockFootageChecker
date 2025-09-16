@@ -4,7 +4,6 @@ import shutil
 import json
 import time
 import tempfile
-import ffmpeg
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -13,6 +12,7 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 import imagehash
+import cv2  # NEW: fallback frame extraction without system ffmpeg
 
 # PySceneDetect imports
 from scenedetect import open_video, SceneManager
@@ -29,24 +29,40 @@ def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
-def run_ffmpeg_extract_1fps(infile: Path, outdir: Path) -> List[Path]:
-    """Fallback: extract 1 fps frames with ffmpeg."""
+def extract_1fps_opencv(infile: Path, outdir: Path) -> List[Path]:
+    """Fallback: extract ~1 fps frames using OpenCV (no system ffmpeg needed).
+    Writes JPEGs into outdir. Returns list of written frame paths.
+    """
     ensure_dir(outdir)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(infile),
-        "-vf",
-        "fps=1",
-        str(outdir / "frame_%06d.jpg"),
-    ]
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        st.error("ffmpeg failed to extract frames. Check ffmpeg is installed.")
+    cap = cv2.VideoCapture(str(infile))
+    if not cap.isOpened():
+        st.error("OpenCV could not open the video. Install system ffmpeg or try a different codec.")
         st.stop()
-    return sorted(outdir.glob("frame_*.jpg"))
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps is None or fps <= 0:
+        fps = 25.0  # assume 25 if unknown
+    step = int(round(fps))  # grab ~1 frame per second
+
+    frame_idx = 0
+    saved_paths: List[Path] = []
+
+    ok, frame = cap.read()
+    while ok:
+        if frame_idx % max(step, 1) == 0:
+            # Write JPEG
+            out_path = outdir / f"frame_{frame_idx:06d}.jpg"
+            try:
+                # cv2.imwrite expects BGR
+                cv2.imwrite(str(out_path), frame)
+                saved_paths.append(out_path)
+            except Exception:
+                pass
+        ok, frame = cap.read()
+        frame_idx += 1
+
+    cap.release()
+    return saved_paths
 
 
 def scenes_to_keyframes(video_path: Path, outdir: Path, threshold: float, min_scene_len: int) -> List[Tuple[Path, Tuple[int, int]]]:
@@ -172,7 +188,7 @@ if uploaded:
             except Exception as e:
                 st.warning(f"Scene detection failed ({e}). Falling back to 1 fps.")
         if not frame_records:
-            simple = run_ffmpeg_extract_1fps(video_path, frames_dir)
+            simple = extract_1fps_opencv(video_path, frames_dir)
             frame_records = [(p, (0, 0)) for p in simple]
 
     all_frames = [rec[0] for rec in frame_records]
