@@ -20,6 +20,7 @@ from scenedetect.detectors import ContentDetector
 
 # Google Cloud Vision
 from google.cloud import vision
+from google.oauth2 import service_account
 
 # ---------------------------
 # Helpers
