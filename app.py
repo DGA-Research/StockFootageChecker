@@ -179,7 +179,7 @@ with st.sidebar:
     use_scene_detect = st.checkbox("Use scene detection (PySceneDetect)", value=True)
     threshold = st.slider("Scene threshold", 1.0, 60.0, 27.0, 1.0)
     min_scene_len = st.slider("Min scene length (frames)", 1, 60, 12, 1)
-    max_frames = st.slider("Max frames to query", 1, 30, 8, 1)
+    max_frames = st.slider("Max frames to query", 1, 60, 8, 1)
     dedupe_hamming = st.slider("De-dup Hamming distance", 1, 16, 5, 1)
     st.caption("Lower max frames keeps API costs low. Dedup filters near-identical frames.")
 
