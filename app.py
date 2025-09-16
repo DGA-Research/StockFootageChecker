@@ -25,6 +25,15 @@ from google.cloud import vision
 # Helpers
 # ---------------------------
 
+
+# Load service account credentials from secrets
+creds_dict = st.secrets["gcp_service_account"]
+creds = service_account.Credentials.from_service_account_info(dict(creds_dict))
+
+# Make the Vision client with explicit credentials
+vision_client = vision.ImageAnnotatorClient(credentials=creds)
+
+
 def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
@@ -102,24 +111,21 @@ def dedupe_frames_by_phash(frame_paths: List[Path], max_distance: int = 5) -> Li
     return kept
 
 
-def gcv_web_detection_for_image_bytes(img_bytes: bytes) -> Dict[str, Any]:
-    client = vision.ImageAnnotatorClient()
+def gcv_web_detection_for_image_bytes(img_bytes: bytes):
     image = vision.Image(content=img_bytes)
-    resp = client.web_detection(image=image)
+    resp = vision_client.web_detection(image=image)
     if resp.error.message:
         raise RuntimeError(resp.error.message)
-
     wd = resp.web_detection
-    result: Dict[str, Any] = {
+    return {
         "web_entities": [
             {"description": e.description, "score": getattr(e, "score", None)}
             for e in getattr(wd, "web_entities", [])
             if getattr(e, "description", None)
         ],
-        "visually_similar": [getattr(i, "url", None) for i in getattr(wd, "visually_similar_images", []) if getattr(i, "url", None)],
-        "pages_with_matches": [getattr(p, "url", None) for p in getattr(wd, "pages_with_matching_images", []) if getattr(p, "url", None)],
+        "visually_similar": [i.url for i in getattr(wd, "visually_similar_images", []) if i.url],
+        "pages_with_matches": [p.url for p in getattr(wd, "pages_with_matching_images", []) if p.url],
     }
-    return result
 
 
 def risk_tags_from_metadata(urls: List[str], entities: List[Dict[str, Any]]) -> List[str]:
