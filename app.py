@@ -104,6 +104,7 @@ def dedupe_frames_by_phash(frame_paths: List[Path], max_distance: int = 5) -> Li
 
 
 # ---- Credential bootstrap (secrets first, then env var) ----
+
 def get_vision_client():
     """Return a Vision client using Streamlit secrets if available, else env var. None if neither is set."""
     try:
@@ -122,25 +123,35 @@ VISION_CLIENT = get_vision_client()
 
 
 def gcv_web_detection_for_image_bytes(img_bytes: bytes) -> Dict[str, Any]:
-(img_bytes: bytes) -> Dict[str, Any]:
+    """Call Google Vision Web Detection for a single image (bytes)."""
     if VISION_CLIENT is None:
-        raise RuntimeError("Google Vision credentials not configured: add `gcp_service_account` to st.secrets or set GOOGLE_APPLICATION_CREDENTIALS.")
+        raise RuntimeError(
+            "Google Vision credentials not configured: add `gcp_service_account` "
+            "to st.secrets or set GOOGLE_APPLICATION_CREDENTIALS."
+        )
     image = vision.Image(content=img_bytes)
     resp = VISION_CLIENT.web_detection(image=image)
     if resp.error.message:
         raise RuntimeError(resp.error.message)
 
     wd = resp.web_detection
-    result: Dict[str, Any] = {
+    return {
         "web_entities": [
             {"description": e.description, "score": getattr(e, "score", None)}
             for e in getattr(wd, "web_entities", [])
             if getattr(e, "description", None)
         ],
-        "visually_similar": [getattr(i, "url", None) for i in getattr(wd, "visually_similar_images", []) if getattr(i, "url", None)],
-        "pages_with_matches": [getattr(p, "url", None) for p in getattr(wd, "pages_with_matching_images", []) if getattr(p, "url", None)],
+        "visually_similar": [
+            getattr(i, "url", None)
+            for i in getattr(wd, "visually_similar_images", [])
+            if getattr(i, "url", None)
+        ],
+        "pages_with_matches": [
+            getattr(p, "url", None)
+            for p in getattr(wd, "pages_with_matching_images", [])
+            if getattr(p, "url", None)
+        ],
     }
-    return result
 
 
 def risk_tags_from_metadata(urls: List[str], entities: List[Dict[str, Any]]) -> List[str]:
@@ -185,6 +196,7 @@ if uploaded:
 
     st.info(f"Saved to {video_path}")
 
+    # 1) Extract keyframes
     with st.spinner("Detecting scenes / extracting frames..."):
         frame_records: List[Tuple[Path, Tuple[int, int]]] = []
         if use_scene_detect:
@@ -199,10 +211,12 @@ if uploaded:
     all_frames = [rec[0] for rec in frame_records]
     st.write(f"Extracted {len(all_frames)} raw frames.")
 
+    # 2) De-duplicate
     with st.spinner("De-duplicating frames by perceptual hash..."):
         kept_frames = dedupe_frames_by_phash(all_frames, max_distance=int(dedupe_hamming))
     st.write(f"Kept {len(kept_frames)} unique frames after de-dup.")
 
+    # 3) Limit to max_frames (simple sample)
     sample_frames = kept_frames[: int(max_frames)]
 
     st.subheader("Sampled Frames")
@@ -211,12 +225,17 @@ if uploaded:
         with cols[i % len(cols)]:
             st.image(str(p), caption=p.name, width="stretch")
 
+    # 4) Call Google Vision Web Detection
     st.subheader("Reverse Image Lookups (Google Vision Web Detection)")
-if VISION_CLIENT is None:
-    st.warning("Google Vision not configured. Add your service account JSON to `st.secrets['gcp_service_account']` or set the `GOOGLE_APPLICATION_CREDENTIALS` env var.")
 
-results: List[Dict[str, Any]] = []
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    results: List[Dict[str, Any]] = []
+
+    if VISION_CLIENT is None:
+        st.warning(
+            "Google Vision not configured. Add your service account JSON to `st.secrets['gcp_service_account']` "
+            "or set the `GOOGLE_APPLICATION_CREDENTIALS` env var."
+        )
+    else:
         with st.spinner("Querying Vision API (Web Detection)..."):
             for p in sample_frames:
                 try:
@@ -250,6 +269,7 @@ results: List[Dict[str, Any]] = []
                         "raw_entities": [],
                     })
 
+    # 5) Present findings
     if results:
         st.markdown("---")
         st.subheader("Findings Summary")
@@ -263,6 +283,7 @@ results: List[Dict[str, Any]] = []
 
         st.subheader("Findings Table")
         df = pd.DataFrame(results)
+        # For display: clickable URLs in a simple way
         def md_urls(s: str) -> str:
             if not s:
                 return ""
@@ -271,23 +292,31 @@ results: List[Dict[str, Any]] = []
 
         disp = df.copy()
         disp["top_urls"] = disp["top_urls"].apply(md_urls)
+        # Hide raw columns from the view
         disp_view = disp.drop(columns=["raw_urls", "raw_entities"]) if "raw_urls" in disp.columns else disp
-        st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
+        st.write(
+            disp_view.to_html(escape=False, index=False),
+            unsafe_allow_html=True
+        )
 
+        # Download CSV
         csv_bytes = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV (raw findings)", data=csv_bytes, file_name="findings.csv", mime="text/csv")
 
     st.markdown("---")
     st.subheader("Next Steps / TODOs")
-    st.markdown("""
+    st.markdown(
+        """
         - Add TinEye API as a second source and reconcile results.
-        - Integrate stock provider APIs (Adobe Stock first).
-        - Add OCR (Vision TEXT_DETECTION) & Logo detection with watchlist.
-        - Add a scene timeline UI with timecodes.
-        - Persist job runs in DB + background worker.
-        - CLIP + FAISS to detect reuse across internal corpus.
-        """)
+        - Integrate stock provider APIs (Adobe Stock first) to fetch license class, releases, keywords.
+        - Add OCR (Vision TEXT_DETECTION) & Logo detection; maintain a watchlist to auto-flag.
+        - Add a scene timeline UI and per-timecode mapping.
+        - Persist job runs in a DB; add a background worker + rate-limiters.
+        - CLIP + FAISS to detect reuse across your internal ad corpus.
+        """
+    )
 
+    # Clean-up button (optional; temp dirs get auto-removed on restart)
     with st.expander("Temporary Files"):
         st.code(str(workdir))
         if st.button("Delete temp workdir"):
