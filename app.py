@@ -12,7 +12,7 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 import imagehash
-import cv2  # NEW: fallback frame extraction without system ffmpeg
+import cv2  # Fallback frame extraction without system ffmpeg
 
 # PySceneDetect imports
 from scenedetect import open_video, SceneManager
@@ -30,9 +30,7 @@ def ensure_dir(path: Path):
 
 
 def extract_1fps_opencv(infile: Path, outdir: Path) -> List[Path]:
-    """Fallback: extract ~1 fps frames using OpenCV (no system ffmpeg needed).
-    Writes JPEGs into outdir. Returns list of written frame paths.
-    """
+    """Fallback: extract ~1 fps frames using OpenCV (no system ffmpeg needed)."""
     ensure_dir(outdir)
     cap = cv2.VideoCapture(str(infile))
     if not cap.isOpened():
@@ -41,8 +39,8 @@ def extract_1fps_opencv(infile: Path, outdir: Path) -> List[Path]:
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps is None or fps <= 0:
-        fps = 25.0  # assume 25 if unknown
-    step = int(round(fps))  # grab ~1 frame per second
+        fps = 25.0
+    step = int(round(fps))
 
     frame_idx = 0
     saved_paths: List[Path] = []
@@ -50,10 +48,8 @@ def extract_1fps_opencv(infile: Path, outdir: Path) -> List[Path]:
     ok, frame = cap.read()
     while ok:
         if frame_idx % max(step, 1) == 0:
-            # Write JPEG
             out_path = outdir / f"frame_{frame_idx:06d}.jpg"
             try:
-                # cv2.imwrite expects BGR
                 cv2.imwrite(str(out_path), frame)
                 saved_paths.append(out_path)
             except Exception:
@@ -66,9 +62,6 @@ def extract_1fps_opencv(infile: Path, outdir: Path) -> List[Path]:
 
 
 def scenes_to_keyframes(video_path: Path, outdir: Path, threshold: float, min_scene_len: int) -> List[Tuple[Path, Tuple[int, int]]]:
-    """Use PySceneDetect to find scenes; save one mid-frame per scene.
-    Returns list of (frame_path, (start_frame, end_frame)).
-    """
     ensure_dir(outdir)
     video = open_video(str(video_path))
     sm = SceneManager()
@@ -85,15 +78,11 @@ def scenes_to_keyframes(video_path: Path, outdir: Path, threshold: float, min_sc
             video.save_frame(mid, str(frame_path))
             results.append((frame_path, (start_f, end_f)))
         except Exception:
-            # If save_frame fails on a scene, skip it silently
             continue
     return results
 
 
 def dedupe_frames_by_phash(frame_paths: List[Path], max_distance: int = 5) -> List[Path]:
-    """Keep frames that are not near-duplicates under pHash Hamming distance.
-    Simple greedy pass is fine for MVP.
-    """
     kept: List[Path] = []
     hashes: List[Tuple[Path, imagehash.ImageHash]] = []
     for p in frame_paths:
@@ -114,7 +103,6 @@ def dedupe_frames_by_phash(frame_paths: List[Path], max_distance: int = 5) -> Li
 
 
 def gcv_web_detection_for_image_bytes(img_bytes: bytes) -> Dict[str, Any]:
-    """Call Google Cloud Vision Web Detection for a single image (bytes)."""
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=img_bytes)
     resp = client.web_detection(image=image)
@@ -137,18 +125,15 @@ def gcv_web_detection_for_image_bytes(img_bytes: bytes) -> Dict[str, Any]:
 def risk_tags_from_metadata(urls: List[str], entities: List[Dict[str, Any]]) -> List[str]:
     tags = set()
     joined = " ".join([u.lower() for u in urls])
-    # Heuristic hints
     if any(x in joined for x in ["/editorial", "editorial", "/news/"]):
         tags.add("Editorial-only?")
     if any(x in joined for x in ["gettyimages.com", "istockphoto.com", "shutterstock.com", "adobe.com/stock"]):
         tags.add("Likely stock source")
-    # Entity keywords that might be sensitive (MVP — expand later)
     sensitive = {"protest", "police", "covid", "russia", "war", "military", "donald trump", "joe biden"}
     ent_text = " ".join([str(e.get("description", "")).lower() for e in entities])
     if any(s in ent_text for s in sensitive):
         tags.add("Sensitive context")
     return sorted(tags)
-
 
 # ---------------------------
 # Streamlit UI
@@ -179,7 +164,6 @@ if uploaded:
 
     st.info(f"Saved to {video_path}")
 
-    # 1) Extract keyframes
     with st.spinner("Detecting scenes / extracting frames..."):
         frame_records: List[Tuple[Path, Tuple[int, int]]] = []
         if use_scene_detect:
@@ -194,21 +178,18 @@ if uploaded:
     all_frames = [rec[0] for rec in frame_records]
     st.write(f"Extracted {len(all_frames)} raw frames.")
 
-    # 2) De-duplicate
     with st.spinner("De-duplicating frames by perceptual hash..."):
         kept_frames = dedupe_frames_by_phash(all_frames, max_distance=int(dedupe_hamming))
     st.write(f"Kept {len(kept_frames)} unique frames after de-dup.")
 
-    # 3) Limit to max_frames (simple sample)
     sample_frames = kept_frames[: int(max_frames)]
 
     st.subheader("Sampled Frames")
     cols = st.columns(min(4, len(sample_frames)) or 1)
     for i, p in enumerate(sample_frames):
         with cols[i % len(cols)]:
-            st.image(str(p), caption=p.name, use_container_width=True)
+            st.image(str(p), caption=p.name, width="stretch")
 
-    # 4) Call Google Vision Web Detection
     st.subheader("Reverse Image Lookups (Google Vision Web Detection)")
     if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") is None:
         st.warning("GOOGLE_APPLICATION_CREDENTIALS is not set. Configure your Vision API service account to enable lookups.")
@@ -221,7 +202,6 @@ if uploaded:
                     with open(p, "rb") as f:
                         img_bytes = f.read()
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
-                    # Build row
                     urls = list({*(wd.get("visually_similar", []) + wd.get("pages_with_matches", []))})
                     entities = wd.get("web_entities", [])
                     row = {
@@ -249,7 +229,6 @@ if uploaded:
                         "raw_entities": [],
                     })
 
-    # 5) Present findings
     if results:
         st.markdown("---")
         st.subheader("Findings Summary")
@@ -263,7 +242,6 @@ if uploaded:
 
         st.subheader("Findings Table")
         df = pd.DataFrame(results)
-        # For display: clickable URLs in a simple way
         def md_urls(s: str) -> str:
             if not s:
                 return ""
@@ -272,31 +250,23 @@ if uploaded:
 
         disp = df.copy()
         disp["top_urls"] = disp["top_urls"].apply(md_urls)
-        # Hide raw columns from the view
         disp_view = disp.drop(columns=["raw_urls", "raw_entities"]) if "raw_urls" in disp.columns else disp
-        st.write(
-            disp_view.to_html(escape=False, index=False),
-            unsafe_allow_html=True
-        )
+        st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-        # Download CSV
         csv_bytes = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV (raw findings)", data=csv_bytes, file_name="findings.csv", mime="text/csv")
 
     st.markdown("---")
     st.subheader("Next Steps / TODOs")
-    st.markdown(
-        """
+    st.markdown("""
         - Add TinEye API as a second source and reconcile results.
-        - Integrate stock provider APIs (Adobe Stock first) to fetch license class, releases, keywords.
-        - Add OCR (Vision TEXT_DETECTION) & Logo detection; maintain a watchlist to auto-flag.
-        - Add a scene timeline UI and per-timecode mapping.
-        - Persist job runs in a DB; add a background worker + rate-limiters.
-        - CLIP + FAISS to detect reuse across your internal ad corpus.
-        """
-    )
+        - Integrate stock provider APIs (Adobe Stock first).
+        - Add OCR (Vision TEXT_DETECTION) & Logo detection with watchlist.
+        - Add a scene timeline UI with timecodes.
+        - Persist job runs in DB + background worker.
+        - CLIP + FAISS to detect reuse across internal corpus.
+        """)
 
-    # Clean-up button (optional; temp dirs get auto-removed on restart)
     with st.expander("Temporary Files"):
         st.code(str(workdir))
         if st.button("Delete temp workdir"):
