@@ -4,6 +4,7 @@ import shutil
 import json
 import time
 import tempfile
+import ffmpeg
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
