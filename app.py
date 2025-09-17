@@ -361,20 +361,28 @@ if uploaded:
                     # Preprocess (mask overlay text, resize, sharpen) then PNG bytes
                     img_bytes = preprocess_for_vision(
                         p,
-                        target_width=int(target_width),
-                        mask_overlay_text=bool(mask_overlay_text),
-                        sharpen_amount=float(sharpen_amount),
+                        target_width=960,           # or a sidebar slider if you added it
+                        mask_overlay_text=True,     # or your sidebar toggle
+                        sharpen_amount=0.6,         # or your sidebar slider
                     )
-
 
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
 
                     # Collect URLs and prioritize stock providers
                     all_urls = list({*(wd.get("visually_similar", []) + wd.get("pages_with_matches", []))})
-
-                    stock_urls = [u for u in all_urls if any(d in u for d in _stock_domains)]
+                    stock_urls = [u for u in all_urls if any(d in u for d in STOCK_DOMAINS)]
                     other_urls = [u for u in all_urls if u not in stock_urls]
-                    urls = stock_urls if stock_only else all_urls # prefer stock when present
+
+                    # Respect stock_only if you have it in the sidebar; else prefer stock when present
+                    try:
+                        show_stock_only = bool(stock_only)
+                    except NameError:
+                        show_stock_only = False
+                    if show_stock_only:
+                        urls = stock_urls
+                        other_urls = []
+                    else:
+                        urls = stock_urls if stock_urls else all_urls
 
                     entities = wd.get("web_entities", [])
 
@@ -405,6 +413,7 @@ if uploaded:
                         "raw_urls": [],
                         "raw_entities": [],
                     })
+
 
 
     # 5) Present findings
