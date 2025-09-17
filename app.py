@@ -332,6 +332,65 @@ def adobe_stock_search_similar(
     return {"matches": out, "nb_results": payload.get("nb_results")}
 
 
+# ---- TinEye: reverse image search ----
+
+TINEYE_API_ENDPOINT = "https://api.tineye.com/rest/search/"
+
+def tineye_enabled() -> bool:
+    try:
+        return (
+            "tineye" in st.secrets
+            and st.secrets["tineye"].get("public_key")
+            and st.secrets["tineye"].get("private_key")
+        )
+    except Exception:
+        return False
+
+
+def tineye_search_image(
+    img_bytes: bytes,
+    *,
+    limit: int = 10,
+    sort: str = "score",    # or "crawl_date"
+    order: str = "desc",
+) -> Dict[str, Any]:
+    """
+    Upload an image to TinEye API and return normalized results.
+    """
+    if not tineye_enabled():
+        raise RuntimeError("TinEye API keys not set in st.secrets['tineye'].")
+
+    auth = (
+        st.secrets["tineye"]["public_key"],
+        st.secrets["tineye"]["private_key"],
+    )
+
+    files = {
+        "image_upload": ("frame.png", img_bytes, "image/png"),
+    }
+    data = {
+        "limit": str(limit),
+        "sort": sort,
+        "order": order,
+    }
+
+    r = requests.post(TINEYE_API_ENDPOINT, auth=auth, files=files, data=data, timeout=45)
+    r.raise_for_status()
+    payload = r.json() or {}
+
+    result = (payload.get("result") or {})
+    matches = result.get("matches") or []
+
+    out = []
+    for m in matches:
+        backlinks = m.get("backlinks") or []
+        top_url = backlinks[0].get("url") if backlinks else None
+        out.append({
+            "score": m.get("score"),
+            "top_url": top_url,
+            "backlinks": [b.get("url") for b in backlinks if b.get("url")],
+        })
+    return {"matches": out, "total_matches": result.get("total_results")}
 
 
 # ---------------------------
@@ -373,6 +432,13 @@ with st.sidebar:
     st.subheader("Adobe Stock (reverse image)")
     use_adobe = st.checkbox("Query Adobe Stock for similar clips", value=True)
     adobe_limit = st.slider("Adobe matches per frame", 1, 20, 8, 1)
+    
+    st.divider()
+    st.subheader("TinEye (reverse image)")
+    use_tineye = st.checkbox("Query TinEye", value=True)
+    tineye_limit = st.slider("TinEye matches per frame", 1, 50, 10, 1)
+    tineye_sort = st.selectbox("TinEye sort", ["score", "crawl_date"], index=0)
+
 
 
 uploaded = st.file_uploader("Upload ad video (MP4/WEBM/MOV)", type=["mp4", "mov", "webm"]) 
@@ -515,18 +581,73 @@ if uploaded:
                         "raw_urls": all_urls,
                         "raw_entities": entities,
                     }
-                    results.append(row)
+
+                    # --- TinEye lookup (optional) ---
+                    tineye_summary = {}
+                    if use_tineye and tineye_enabled():
+                        try:
+                            te = tineye_search_image(
+                                img_bytes,
+                                limit=int(tineye_limit),
+                                sort=str(tineye_sort),
+                                order="desc",
+                            )
+                            t_matches = te.get("matches", [])
+                            t_top = t_matches[0] if t_matches else {}
+                             # collect domains for quick triage
+                            domains = []
+                            for m in t_matches:
+                                for u in (m.get("backlinks") or []):
+                                    try:
+                                        domains.append(u.split("/")[2])
+                                    except Exception:
+                                        pass
+
+                            # prefer stock provider URLs if present
+                            stock_backlinks = [u for u in (t_top.get("backlinks") or []) if any(d in u for d in STOCK_DOMAINS)]
+                            top_url = stock_backlinks[0] if stock_backlinks else (t_top.get("top_url") or "")
+                            
+                            tineye_summary = {
+                                "tineye_count": len(t_matches),
+                                "tineye_top_url": top_url,
+                                "tineye_domains": ", ".join(sorted(set(domains))[:5]),
+                             }
+                        except Exception as e:
+                            tineye_summary = {
+                                "tineye_count": 0,
+                                "tineye_top_url": "",
+                                "tineye_domains": "",
+                                "tineye_error": str(e),
+                            }
+                    elif use_tineye and not tineye_enabled():
+                        st.warning("TinEye not configured: add [tineye] public_key + private_key to Streamlit secrets.")
+
+
+
+            
 
                     row.update({
                         "adobe_matches": adobe_summary.get("adobe_count", 0),
                         "adobe_top": (
-                        f"[{adobe_summary.get('adobe_top_title','')}]"
-                        f"({adobe_summary.get('adobe_top_url','')})"
-                        if adobe_summary.get("adobe_top_url") else ""
-                    ),
-                    "adobe_ids": ", ".join(map(str, adobe_summary.get("adobe_ids", []))),
-                    "adobe_error": adobe_summary.get("adobe_error", ""),
-                })
+                            f"[{adobe_summary.get('adobe_top_title','')}]"
+                            f"({adobe_summary.get('adobe_top_url','')})"
+                            if adobe_summary.get("adobe_top_url") else ""
+                        ),
+                        "adobe_ids": ", ".join(map(str, adobe_summary.get("adobe_ids", []))),
+                        "adobe_error": adobe_summary.get("adobe_error", ""),
+
+
+                        # TinEye
+                        "tineye_matches": tineye_summary.get("tineye_count", 0),
+                        "tineye_top": (
+                            f"[Open]({tineye_summary.get('tineye_top_url','')})"
+                            if tineye_summary.get("tineye_top_url") else ""
+                        ),
+                    "tineye_domains": tineye_summary.get("tineye_domains", ""),
+                    "tineye_error": tineye_summary.get("tineye_error", ""),
+                    })
+
+                    results.append(row)
 
 
                 except Exception as e:
@@ -559,6 +680,7 @@ if uploaded:
 
         st.subheader("Findings Table")
         df = pd.DataFrame(results)
+        
         # For display: clickable URLs in a simple way
         def _mk_links(s: str) -> str:
             if not s:
@@ -598,12 +720,14 @@ if uploaded:
             except Exception:
                 return s
 
-        if "adobe_top" in disp.columns:
-            disp["adobe_top"] = disp["adobe_top"].apply(_linkify_md)
-    
+        # Linkify columns
         for col in ("top_urls", "other_urls"):
             if col in disp.columns:
                 disp[col] = disp[col].apply(_mk_links)
+        if "adobe_top" in disp.columns:
+            disp["adobe_top"] = disp["adobe_top"].apply(_linkify_md)
+        if "tineye_top" in disp.columns:
+            disp["tineye_top"] = disp["tineye_top"].apply(_linkify_md)
     
         
         # Hide raw columns from the view
@@ -612,10 +736,17 @@ if uploaded:
 
         st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-
-        # Download CSV
+        # Download CSV (unique key avoids duplicate ID)
         csv_bytes = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download CSV (raw findings)", data=csv_bytes, file_name="findings.csv", mime="text/csv")
+        dl_key = f"dl_csv_{Path(video_path).name}_{len(df)}"
+        st.download_button(
+            "Download CSV (raw findings)",
+            data=csv_bytes,
+            file_name="findings.csv",
+            mime="text/csv",
+            key=dl_key,
+        )
+
 
     st.markdown("---")
     st.subheader("Next Steps / TODOs")
