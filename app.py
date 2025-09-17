@@ -25,6 +25,18 @@ from google.oauth2 import service_account
 import numpy as np
 
 
+
+_stock_domains = (
+    "shutterstock.com", "adobe.com/stock", "stock.adobe.com",
+    "gettyimages.com", "istockphoto.com", "alamy.com",
+    "pond5.com", "storyblocks.com", "depositphotos.com",
+    "dreamstime.com", "123rf.com", "videoblocks.com",
+    "envato.com", "motionarray.com"
+)
+
+
+
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -359,13 +371,7 @@ if uploaded:
 
                     # Collect URLs and prioritize stock providers
                     all_urls = list({*(wd.get("visually_similar", []) + wd.get("pages_with_matches", []))})
-                    _stock_domains = (
-                        "shutterstock.com", "adobe.com/stock", "stock.adobe.com",
-                        "gettyimages.com", "istockphoto.com", "alamy.com",
-                        "pond5.com", "storyblocks.com", "depositphotos.com",
-                        "dreamstime.com", "123rf.com", "videoblocks.com",
-                        "envato.com", "motionarray.com"
-                    )
+
                     stock_urls = [u for u in all_urls if any(d in u for d in _stock_domains)]
                     other_urls = [u for u in all_urls if u not in stock_urls]
                     urls = stock_urls if stock_only else all_urls # prefer stock when present
