@@ -461,27 +461,27 @@ if uploaded:
                                 limit=int(adobe_limit),
                                 videos_only=True,          # set False if you also want photos
                                 thumbnail_size=500
-                    )
-                    matches = adobe.get("matches", [])
-                    # Build a concise “top” entry + counts
-                    top = matches[0] if matches else None
-                    adobe_summary = {
-                        "adobe_count": len(matches),
-                        "adobe_top_title": (top or {}).get("title") or "",
-                        "adobe_top_url": (top or {}).get("details_url") or "",
-                        "adobe_ids": [m.get("id") for m in matches if m.get("id")],
-                    }
-                except Exception as e:
-                    adobe_summary = {
-                        "adobe_count": 0,
-                        "adobe_top_title": "",
-                        "adobe_top_url": "",
-                        "adobe_ids": [],
-                        "adobe_error": str(e),
-                    }
-            else:
-                if use_adobe and not adobe_stock_enabled():
-                    st.warning("Adobe Stock not configured: add [adobe_stock] api_key + product to Streamlit secrets.")
+                            )
+                            matches = adobe.get("matches", [])
+                            # Build a concise “top” entry + counts
+                            top = matches[0] if matches else None
+                            adobe_summary = {
+                                "adobe_count": len(matches),
+                                "adobe_top_title": (top or {}).get("title") or "",
+                                "adobe_top_url": (top or {}).get("details_url") or "",
+                                "adobe_ids": [m.get("id") for m in matches if m.get("id")],
+                            }
+                        except Exception as e:
+                            adobe_summary = {
+                                "adobe_count": 0,
+                                "adobe_top_title": "",
+                                "adobe_top_url": "",
+                                "adobe_ids": [],
+                                "adobe_error": str(e),
+                            }
+                    else:
+                        if use_adobe and not adobe_stock_enabled():
+                            st.warning("Adobe Stock not configured: add [adobe_stock] api_key + product to Streamlit secrets.")
 
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
 
