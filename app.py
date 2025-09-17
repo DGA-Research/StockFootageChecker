@@ -514,9 +514,9 @@ if uploaded:
                     # Preprocess (mask overlay text, resize, sharpen) then PNG bytes
                     img_bytes = preprocess_for_vision(
                         p,
-                        target_width=960,           # or a sidebar slider if you added it
-                        mask_overlay_text=True,     # or your sidebar toggle
-                        sharpen_amount=0.6,         # or your sidebar slider
+                        target_width=int(target_width),
+                        mask_overlay_text=bool(mask_overlay_text),
+                        sharpen_amount=float(sharpen_amount),
                     )
 
                     adobe_summary = {}
@@ -690,21 +690,6 @@ if uploaded:
                 [f"<a href='{u}' target='_blank'>{u[:80]}{'…' if len(u)>80 else ''}</a>" for u in parts]
             )
             
-        disp = df.copy()
-        for col in ("top_urls", "other_urls"):
-            if col in disp.columns:
-                disp[col] = disp[col].apply(_mk_links)
-    
-        drop_cols = [c for c in ("raw_urls", "raw_entities") if c in disp.columns]
-        disp_view = disp.drop(columns=drop_cols) if drop_cols else disp
-
-        st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
-    
-        # Download CSV
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download CSV (raw findings)", data=csv_bytes, file_name="findings.csv", mime="text/csv")
-    
-
 
         def _linkify_md(s: str) -> str:
             # Render markdown-style [title](url) to HTML <a>, safely
@@ -719,6 +704,9 @@ if uploaded:
                 return f"<a href='{url}' target='_blank'>{title or url}</a>"
             except Exception:
                 return s
+
+        disp = df.copy()
+
 
         # Linkify columns
         for col in ("top_urls", "other_urls"):
