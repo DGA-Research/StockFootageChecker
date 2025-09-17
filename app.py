@@ -22,6 +22,9 @@ from scenedetect.detectors import ContentDetector
 from google.cloud import vision
 from google.oauth2 import service_account
 
+import numpy as np
+
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -167,6 +170,75 @@ def risk_tags_from_metadata(urls: List[str], entities: List[Dict[str, Any]]) -> 
         tags.add("Sensitive context")
     return sorted(tags)
 
+def _mask_text_with_vision(img_bgr: 'np.ndarray') -> 'np.ndarray':
+    """Use Google Vision TEXT_DETECTION to find large text regions and black them out.
+    Returns a copy of the image with masks applied. If Vision client is missing or fails, returns original.
+    """
+    try:
+        if VISION_CLIENT is None:
+            return img_bgr
+        # Encode to PNG bytes for Vision
+        ok, buf = cv2.imencode('.png', img_bgr)
+        if not ok:
+            return img_bgr
+        img_bytes = buf.tobytes()
+        image = vision.Image(content=img_bytes)
+        resp = VISION_CLIENT.text_detection(image=image)
+        if getattr(resp, 'error', None) and resp.error.message:
+            return img_bgr
+        ann = resp.text_annotations
+        if not ann:
+            return img_bgr
+        # First element is full text; subsequent are words with bounding polys
+        out = img_bgr.copy()
+        h, w = out.shape[:2]
+        for word in ann[1:]:
+            verts = [(v.x, v.y) for v in word.bounding_poly.vertices]
+            xs = [x for x, y in verts if x is not None]
+            ys = [y for x, y in verts if y is not None]
+            if not xs or not ys:
+                continue
+            x1, y1, x2, y2 = max(min(xs), 0), max(min(ys), 0), min(max(xs), w-1), min(max(ys), h-1)
+            # Heuristic: mask only larger text boxes (> ~3% width, > ~1.5% height)
+            if (x2 - x1) / max(w,1) >= 0.03 and (y2 - y1) / max(h,1) >= 0.015:
+                cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 0), thickness=-1)
+        return out
+    except Exception:
+        return img_bgr
+
+
+def _unsharp_mask(img_bgr: 'np.ndarray', amount: float = 0.6) -> 'np.ndarray':
+    """Simple unsharp mask for mild sharpening. amount in [0, ~1.5]."""
+    try:
+        blur = cv2.GaussianBlur(img_bgr, (0, 0), sigmaX=1.0)
+        return cv2.addWeighted(img_bgr, 1 + amount, blur, -amount, 0)
+    except Exception:
+        return img_bgr
+
+
+def preprocess_for_vision(path: Path, *, target_width: int = 960,
+                          mask_overlay_text: bool = True, sharpen_amount: float = 0.6) -> bytes:
+    """Load with OpenCV, optionally mask overlay text via Vision OCR,
+    resize to target_width, optionally sharpen; return PNG bytes."""
+    img = cv2.imread(str(path))
+    if img is None:
+        with open(path, 'rb') as f:
+            return f.read()
+    h, w = img.shape[:2]
+    if mask_overlay_text:
+        img = _mask_text_with_vision(img)
+    if w > 0 and target_width > 0 and w != target_width:
+        new_h = max(1, int(h * (target_width / float(w))))
+        img = cv2.resize(img, (target_width, new_h), interpolation=cv2.INTER_AREA)
+    if sharpen_amount and sharpen_amount > 0:
+        img = _unsharp_mask(img, amount=float(sharpen_amount))
+    ok, buf = cv2.imencode('.png', img)
+    if not ok:
+        with open(path, 'rb') as f:
+            return f.read()
+    return buf.tobytes()
+
+
 # ---------------------------
 # Streamlit UI
 # ---------------------------
@@ -186,6 +258,20 @@ with st.sidebar:
     stock_only = st.checkbox(
         "Show stock domains only in results", value=True,
         help="Filter to common stock providers (Adobe, Getty/iStock, Shutterstock, Alamy, Pond5, Storyblocks, Depositphotos, Dreamstime). Others appear in 'other_urls'."
+    )
+    st.divider()
+    st.subheader("Preprocessing")
+    mask_overlay_text = st.checkbox(
+        "Mask overlay text (OCR)", value=True,
+        help="Detect large on-screen text (subtitles/banners) and black it out before reverse search."
+    )
+    target_width = st.slider(
+        "Resize width for Vision (px)", 480, 1280, 960, 10,
+        help="Normalize frames; 800–1000px often improves stock matches."
+    )
+    sharpen_amount = st.slider(
+        "Sharpen amount (unsharp mask)", 0.0, 1.5, 0.6, 0.05,
+        help="Mild sharpening can help Vision match stock previews."
     )
     st.caption("Tune sensitivity & cost. Use blur filter to avoid motion-blurred frames that confuse reverse image search.")
 
@@ -260,11 +346,14 @@ if uploaded:
         with st.spinner("Querying Vision API (Web Detection)..."):
             for p in sample_frames:
                 try:
-                    # Send PNG bytes (avoids JPEG artifacts)
-                    pil_im = Image.open(str(p)).convert("RGB")
-                    buf = io.BytesIO()
-                    pil_im.save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
+                    # Preprocess (mask overlay text, resize, sharpen) then PNG bytes
+                    img_bytes = preprocess_for_vision(
+                        p,
+                        target_width=int(target_width),
+                        mask_overlay_text=bool(mask_overlay_text),
+                        sharpen_amount=float(sharpen_amount),
+                    )
+
 
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
 
