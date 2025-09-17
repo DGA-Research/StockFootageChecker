@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+import requests
 
 import streamlit as st
 import pandas as pd
@@ -26,12 +27,12 @@ import numpy as np
 
 
 
-_stock_domains = (
+STOCK_DOMAINS = (
     "shutterstock.com", "adobe.com/stock", "stock.adobe.com",
     "gettyimages.com", "istockphoto.com", "alamy.com",
     "pond5.com", "storyblocks.com", "depositphotos.com",
     "dreamstime.com", "123rf.com", "videoblocks.com",
-    "envato.com", "motionarray.com"
+    "envato.com", "motionarray.com",
 )
 
 
@@ -250,6 +251,88 @@ def preprocess_for_vision(path: Path, *, target_width: int = 960,
             return f.read()
     return buf.tobytes()
 
+# ---- Adobe Stock: reverse image (similar_image) ----
+
+ADOBE_STOCK_ENDPOINT = "https://stock.adobe.io/Rest/Media/1/Search/Files"
+
+def adobe_stock_enabled() -> bool:
+    try:
+        return (
+            "adobe_stock" in st.secrets
+            and st.secrets["adobe_stock"].get("api_key")
+            and st.secrets["adobe_stock"].get("product")
+        )
+    except Exception:
+        return False
+
+
+def adobe_stock_search_similar(
+    img_bytes: bytes,
+    *,
+    limit: int = 8,
+    videos_only: bool = True,
+    thumbnail_size: int = 500,
+) -> Dict[str, Any]:
+    """
+    POST multipart/form-data with 'similar_image' to Adobe Stock Search API.
+    Returns parsed JSON with a safe subset of fields for each file.
+    """
+    if not adobe_stock_enabled():
+        raise RuntimeError("Adobe Stock API key/product not set in st.secrets['adobe_stock'].")
+
+    api_key = st.secrets["adobe_stock"]["api_key"]
+    product = st.secrets["adobe_stock"]["product"]
+
+    headers = {
+        "x-api-key": api_key,
+        "x-product": product,
+    }
+
+    # Query params & body for result shaping.
+    # Important: similar_image requires POST (not GET).
+    # We'll ask only for fields we plan to display.
+    data = [
+        ("search_parameters[limit]", str(limit)),
+        ("search_parameters[thumbnail_size]", str(thumbnail_size)),
+        # Narrow to videos where possible (clips are what you care about):
+        ("search_parameters[filters][content_type:video]", "1" if videos_only else "0"),
+        # You'll typically want "core" + "free", not Premium-only, so be explicit:
+        ("search_parameters[filters][premium]", "all"),
+        # Return lean result columns:
+        ("result_columns[]", "id"),
+        ("result_columns[]", "title"),
+        ("result_columns[]", "media_type_id"),
+        ("result_columns[]", "details_url"),
+        ("result_columns[]", "thumbnail_url"),
+    ]
+
+    files = {
+        # Name must be 'similar_image' when using search_parameters[similar_image]=1
+        "similar_image": ("frame.png", img_bytes, "image/png"),
+    }
+
+    # Important toggle that tells Adobe to use the uploaded part:
+    data.append(("search_parameters[similar_image]", "1"))
+
+    resp = requests.post(ADOBE_STOCK_ENDPOINT, headers=headers, data=data, files=files, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json() or {}
+    files_list = payload.get("files", []) or []
+
+    # Normalize a compact structure for the UI/table
+    out = []
+    for f in files_list:
+        out.append({
+            "id": f.get("id"),
+            "title": f.get("title"),
+            "media_type_id": f.get("media_type_id"),
+            "details_url": f.get("details_url"),
+            "thumbnail_url": f.get("thumbnail_url"),
+        })
+    return {"matches": out, "nb_results": payload.get("nb_results")}
+
+
+
 
 # ---------------------------
 # Streamlit UI
@@ -286,6 +369,10 @@ with st.sidebar:
         help="Mild sharpening can help Vision match stock previews."
     )
     st.caption("Tune sensitivity & cost. Use blur filter to avoid motion-blurred frames that confuse reverse image search.")
+    st.divider()
+    st.subheader("Adobe Stock (reverse image)")
+    use_adobe = st.checkbox("Query Adobe Stock for similar clips", value=True)
+    adobe_limit = st.slider("Adobe matches per frame", 1, 20, 8, 1)
 
 
 uploaded = st.file_uploader("Upload ad video (MP4/WEBM/MOV)", type=["mp4", "mov", "webm"]) 
@@ -366,6 +453,36 @@ if uploaded:
                         sharpen_amount=0.6,         # or your sidebar slider
                     )
 
+                    adobe_summary = {}
+                    if use_adobe and adobe_stock_enabled():
+                        try:
+                            adobe = adobe_stock_search_similar(
+                                img_bytes,
+                                limit=int(adobe_limit),
+                                videos_only=True,          # set False if you also want photos
+                                thumbnail_size=500
+                    )
+                    matches = adobe.get("matches", [])
+                    # Build a concise “top” entry + counts
+                    top = matches[0] if matches else None
+                    adobe_summary = {
+                        "adobe_count": len(matches),
+                        "adobe_top_title": (top or {}).get("title") or "",
+                        "adobe_top_url": (top or {}).get("details_url") or "",
+                        "adobe_ids": [m.get("id") for m in matches if m.get("id")],
+                    }
+                except Exception as e:
+                    adobe_summary = {
+                        "adobe_count": 0,
+                        "adobe_top_title": "",
+                        "adobe_top_url": "",
+                        "adobe_ids": [],
+                        "adobe_error": str(e),
+                    }
+            else:
+                if use_adobe and not adobe_stock_enabled():
+                    st.warning("Adobe Stock not configured: add [adobe_stock] api_key + product to Streamlit secrets.")
+
                     wd = gcv_web_detection_for_image_bytes(img_bytes)
 
                     # Collect URLs and prioritize stock providers
@@ -399,6 +516,18 @@ if uploaded:
                         "raw_entities": entities,
                     }
                     results.append(row)
+
+                    row.update({
+                        "adobe_matches": adobe_summary.get("adobe_count", 0),
+                        "adobe_top": (
+                        f"[{adobe_summary.get('adobe_top_title','')}]"
+                        f"({adobe_summary.get('adobe_top_url','')})"
+                        if adobe_summary.get("adobe_top_url") else ""
+                    ),
+                    "adobe_ids": ", ".join(map(str, adobe_summary.get("adobe_ids", []))),
+                    "adobe_error": adobe_summary.get("adobe_error", ""),
+                })
+
 
                 except Exception as e:
                     results.append({
@@ -440,7 +569,38 @@ if uploaded:
             )
             
         disp = df.copy()
-        
+        for col in ("top_urls", "other_urls"):
+            if col in disp.columns:
+                disp[col] = disp[col].apply(_mk_links)
+    
+        drop_cols = [c for c in ("raw_urls", "raw_entities") if c in disp.columns]
+        disp_view = disp.drop(columns=drop_cols) if drop_cols else disp
+
+        st.write(disp_view.to_html(escape=False, index=False), unsafe_allow_html=True)
+    
+        # Download CSV
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download CSV (raw findings)", data=csv_bytes, file_name="findings.csv", mime="text/csv")
+    
+
+
+        def _linkify_md(s: str) -> str:
+            # Render markdown-style [title](url) to HTML <a>, safely
+            # (We only generate these ourselves; untrusted HTML is still escaped)
+            if not s or "](" not in s:
+                return s or ""
+            try:
+                title = s.split("](", 1)[0].lstrip("[").strip()
+                url = s.split("](", 1)[1].rstrip(")").strip()
+                if not url:
+                    return title
+                return f"<a href='{url}' target='_blank'>{title or url}</a>"
+            except Exception:
+                return s
+
+        if "adobe_top" in disp.columns:
+            disp["adobe_top"] = disp["adobe_top"].apply(_linkify_md)
+    
         for col in ("top_urls", "other_urls"):
             if col in disp.columns:
                 disp[col] = disp[col].apply(_mk_links)
